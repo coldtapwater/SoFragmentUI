@@ -28,4 +28,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = "0.3"
 anyhow = "1.0"
 thiserror = "1.0"
+scraper = "0.21.0"
+robotstxt = "0.3"
+url = "2.5.3"
 
