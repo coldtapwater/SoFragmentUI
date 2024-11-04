@@ -2,8 +2,8 @@
 mod ollama;
 mod search;
 use ollama::{ChatMessage, ChatRequest, OllamaClient, SYSTEM_PROMPT};
-use tauri::{State, Emitter};
-use tauri::async_runtime::TokioJoinHandle;
+use tauri::State;
+use tokio::task::JoinHandle as TokioJoinHandle;
 use tokio::sync::Mutex;
 use anyhow::anyhow;
 use tokio::sync::mpsc;
@@ -39,10 +39,9 @@ async fn perform_search(
 
     let (tx, mut rx) = mpsc::channel(100);
 
-    let task: TokioJoinHandle<Result<(), anyhow::Error>> = tokio::task::spawn(async move {
-        let search_state = state.search.lock().await;
-        let mut receiver = search_state
-            .client
+    let search_state_clone = state.search.lock().await.client.clone();
+    let task: TokioJoinHandle<Result<(), anyhow::Error>> = tokio::spawn(async move {
+        let mut receiver = search_state_clone
             .search_stream(request)
             .await
             .map_err(|e| anyhow!(e.to_string()))?;
@@ -64,7 +63,7 @@ async fn perform_search(
         }
     }
 
-    task.await.map_err(|e| e.to_string())?;
+    task.await.map_err(|e| e.to_string())??;
     Ok(())
 }
 
@@ -112,6 +111,8 @@ async fn chat_stream(
         .chat_stream(request)
         .await
         .map_err(|e| e.to_string())?;
+
+    drop(conversation); // Release the lock before entering the loop
 
     let mut complete_message = String::new();
 
