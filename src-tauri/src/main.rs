@@ -1,18 +1,71 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod ollama;
+mod search;
 use ollama::{ChatMessage, ChatRequest, OllamaClient, SYSTEM_PROMPT};
 use tauri::{State, Emitter};
+use tauri::async_runtime::TokioJoinHandle;
 use tokio::sync::Mutex;
+use anyhow::anyhow;
+use tokio::sync::mpsc;
+use crate::search::{SearchClient, SearchRequest, SearchResult};
 
 // State management for conversation context
 struct ConversationState {
     messages: Vec<ChatMessage>,
 }
 
+struct SearchState {
+    client: SearchClient,
+}
+
 // Combined state management
 struct AppState {
     ollama: Mutex<OllamaClient>,
     conversation: Mutex<ConversationState>,
+    search: Mutex<SearchState>,
+}
+
+#[tauri::command]
+async fn perform_search(
+    window: tauri::Window,
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let search_state = state.search.lock().await;
+        let request = SearchRequest {
+            query,
+            max_results: 5,
+        };
+
+    let (tx, mut rx) = mpsc::channel(100);
+
+    let task: TokioJoinHandle<Result<(), anyhow::Error>> = tokio::task::spawn(async move {
+        let search_state = state.search.lock().await;
+        let mut receiver = search_state
+            .client
+            .search_stream(request)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+
+        // Stream search results as they come in
+        while let Some(result) = receiver.recv().await {
+            tx.send(result).await.map_err(|e| anyhow!(e.to_string()))?;
+        }
+        Ok(())
+    });
+
+    while let Some(result) = rx.recv().await {
+        match window.emit("search-result", &result) {
+            Ok(_) => (),
+            Err(e) => {
+                // handle the error
+                println!("Error emitting search result: {}", e);
+            }
+        }
+    }
+
+    task.await.map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -100,11 +153,18 @@ fn main() {
         conversation: Mutex::new(ConversationState {
             messages: Vec::new(),
         }),
+        search: Mutex::new(SearchState {
+            client: SearchClient::new(),
+        }),
     };
 
     tauri::Builder::default()
         .manage(app_state)
-        .invoke_handler(tauri::generate_handler![chat_stream, clear_conversation])
+        .invoke_handler(tauri::generate_handler![
+            chat_stream,
+            clear_conversation,
+            perform_search
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
