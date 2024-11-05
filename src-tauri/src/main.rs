@@ -1,12 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod ollama;
 mod search;
+use tauri::Emitter;
 use ollama::{ChatMessage, ChatRequest, OllamaClient, SYSTEM_PROMPT};
 use tauri::State;
-use tokio::task::JoinHandle as TokioJoinHandle;
 use tokio::sync::Mutex;
-use anyhow::anyhow;
-use tokio::sync::mpsc;
 use crate::search::{SearchClient, SearchRequest, SearchResult};
 
 // State management for conversation context
@@ -31,39 +29,28 @@ async fn perform_search(
     query: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let search_state = state.search.lock().await;
-        let request = SearchRequest {
-            query,
-            max_results: 5,
-        };
+    // Clone what we need before spawning
+    let search_client = {
+        let search_state = state.search.lock().await;
+        search_state.client.clone()
+    };
 
-    let (tx, mut rx) = mpsc::channel(100);
+    let request = SearchRequest {
+        query,
+        max_results: 5,
+    };
 
-    let search_state_clone = state.search.lock().await.client.clone();
-    let task: TokioJoinHandle<Result<(), anyhow::Error>> = tokio::spawn(async move {
-        let mut receiver = search_state_clone
-            .search_stream(request)
-            .await
-            .map_err(|e| anyhow!(e.to_string()))?;
+    // Use cloned client instead of state reference
+    let mut receiver = search_client
+        .search_stream(request)
+        .await
+        .map_err(|e| e.to_string())?;
 
-        // Stream search results as they come in
-        while let Some(result) = receiver.recv().await {
-            tx.send(result).await.map_err(|e| anyhow!(e.to_string()))?;
-        }
-        Ok(())
-    });
-
-    while let Some(result) = rx.recv().await {
-        match window.emit("search-result", &result) {
-            Ok(_) => (),
-            Err(e) => {
-                // handle the error
-                println!("Error emitting search result: {}", e);
-            }
-        }
+    while let Some(result) = receiver.recv().await {
+        window.emit("search-result", &result)
+            .map_err(|e| e.to_string())?;
     }
 
-    task.await.map_err(|e| e.to_string())??;
     Ok(())
 }
 
@@ -125,16 +112,15 @@ async fn chat_stream(
 
     // Once streaming is complete, add assistant's response to conversation history
     if !complete_message.is_empty() {
+        let mut conversation = state.conversation.lock().await; // Re-acquire the lock
         let context_len = conversation.messages.len();
         
         let assistant_message = OllamaClient::create_assistant_message(complete_message);
         
-        // Maintain a reasonable context window before adding new message
         if context_len > 10 {
             conversation.messages.drain(0..context_len - 10);
         }
         
-        // Add assistant's response to conversation history
         conversation.messages.push(assistant_message);
     }
 

@@ -5,12 +5,22 @@ use tauri::async_runtime::Receiver;
 use futures_util::StreamExt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SearchResult {
+    pub url: String,
+    pub title: String,
+    pub summary: String,
+    pub reading_time: u32,
+    pub favicon_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MessageMetadata {
     pub context_check: Option<String>,
     pub facts_check: Option<String>,
     pub search_check: Option<String>,
     pub reasoning: Option<String>,
     pub learning: Option<String>,
+    pub search_results: Option<Vec<SearchResult>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -56,9 +66,10 @@ FACTS_CHECK:
 [If none: "No relevant facts found in database"]
 
 SEARCH_CHECK:
-[Search results relevant to this query]
-[If none needed: "No search needed for this query"]
-[If search needed: "Performing search for: <specific_search_terms>"]
+[If search keywords detected: "Performing web search for: <specific_search_terms>"]
+[If results available: "Found <n> relevant results:"]
+[If no results: "No relevant search results found"]
+[If no search needed: "No search needed for this query"]
 
 REASONING:
 [Step by step breakdown of how I'm using this information]
@@ -154,6 +165,7 @@ impl OllamaClient {
                 search_check: None,
                 reasoning: None,
                 learning: None,
+                search_results: None,
             }),
         }
     }
